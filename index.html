@@ -133,6 +133,155 @@ function Usuarios({cfg,setCfg,users,setUsers,currentUser,toast}){const admin=isA
 
 const NAV=[{id:'dashboard',label:'Dashboard',icon:'dashboard',mod:'dashboard',group:'principal'},{id:'vagas',label:'Vagas',icon:'vagas',mod:'vagas',group:'operacional'},{id:'kanban',label:'Kanban',icon:'kanban',mod:'kanban',group:'operacional'},{id:'meukanban',label:'Meu Kanban',icon:'meukanban',mod:'meukanban',group:'operacional'},{id:'candidatos',label:'Candidatos',icon:'candidatos',mod:'candidatos',group:'operacional'},{id:'clientes',label:'Clientes',icon:'clientes',mod:'clientes',group:'operacional'},{id:'contratos',label:'Contratos',icon:'contratos',mod:'contratos',group:'operacional'},{id:'relatorios',label:'Relatórios',icon:'relatorios',mod:'relatorios',group:'operacional'},{id:'usuarios',label:'Usuários',icon:'usuarios',mod:'usuarios',group:'admin'},{id:'config',label:'Configurações',icon:'config',mod:'config',group:'admin'}];
 
+
+const STATUS_CONTRATO=["Em andamento","Renovação","Encerrado","Suspenso","Em negociação"];
+const CORCT={"Em andamento":"#4ade80","Renovação":"#f59e0b","Encerrado":"#64748b","Suspenso":"#ef4444","Em negociação":"#3b82f6"};
+function Contratos({contratos,setContratos,clientes,cfg,toast,readonly,currentUser}){
+  const [view,setView]=useState("lista");const [detalhe,setDetalhe]=useState(null);const [modal,setModal]=useState(null);const [form,setForm]=useState({});const [novaAtt,setNovaAtt]=useState("");const [sugestao,setSugestao]=useState("");const [sugestaoLoad,setSugestaoLoad]=useState(false);const [aiArq,setAiArq]=useState(null);const [aiLoad,setAiLoad]=useState(false);const [aiOk,setAiOk]=useState(false);
+  const hoje=new Date();
+  const pct=c=>{if(!c.dataInicio||!c.dataFim)return 0;const i=new Date(c.dataInicio+"T12:00:00"),f=new Date(c.dataFim+"T12:00:00");return Math.max(0,Math.min(100,Math.round((hoje-i)/(f-i)*100)));};
+  const dias=c=>{if(!c.dataFim)return null;return Math.ceil((new Date(c.dataFim+"T12:00:00")-hoje)/86400000);};
+  const open=c=>{setForm(c?{...c}:{status:"Em andamento",atualizacoes:[]});setAiArq(null);setAiOk(false);setModal(c||"novo");};
+  const save=()=>{if(!form.titulo?.trim())return toast("⚠ Título obrigatório");const cl=clientes.find(x=>x.id===form.clienteId);const e={...form,id:form.id||"ct"+Date.now(),nomeCliente:cl?.nome||"",atualizacoes:form.atualizacoes||[]};setContratos(p=>p.some(c=>c.id===e.id)?p.map(c=>c.id===e.id?e:c):[...p,e]);if(detalhe?.id===e.id)setDetalhe(e);setModal(null);toast("✓ Contrato salvo");};
+  const del=id=>{if(confirm("Excluir?"))setContratos(p=>p.filter(c=>c.id!==id));setView("lista");setDetalhe(null);toast("🗑 Excluído");};
+  const addAtt=()=>{if(!novaAtt.trim())return;const a={id:"a"+Date.now(),texto:novaAtt.trim(),data:new Date().toLocaleDateString("pt-BR"),autor:currentUser.nome};const u={...detalhe,atualizacoes:[...(detalhe.atualizacoes||[]),a]};setContratos(p=>p.map(c=>c.id===u.id?u:c));setDetalhe(u);setNovaAtt("");toast("✓ Registrado");};
+  const delAtt=id=>{const u={...detalhe,atualizacoes:(detalhe.atualizacoes||[]).filter(a=>a.id!==id)};setContratos(p=>p.map(c=>c.id===u.id?u:c));setDetalhe(u);};
+  const lerIA=async()=>{if(!aiArq)return;setAiLoad(true);toast("🔍 Lendo contrato...");
+    try{const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=ev=>res(ev.target.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(aiArq);});
+    const cb=aiArq.type==="application/pdf"?{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}:{type:"image",source:{type:"base64",media_type:aiArq.type,data:b64}};
+    const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:[cb,{type:"text",text:'Analise este contrato. Retorne APENAS JSON com: titulo, clienteId (buscar em lista vazia), valor (número), tipoValor ("mensal" ou "total"), duracao (meses), dataInicio (YYYY-MM-DD), dataFim (YYYY-MM-DD), objeto (escopo), responsavel, observacoes. Use "" ou 0 para não encontrados.'}]}]})});
+    const dd=await res.json();const txt=dd.content?.find(b=>b.type==="text")?.text||"{}";
+    const dados=JSON.parse(txt.replace(/```json?|```/g,"").trim());
+    if(dados.titulo){setForm(p=>({...p,...dados}));setAiOk(true);toast("✓ Dados extraídos!");}else toast("⚠ Não foi possível extrair.");
+    }catch(e){toast("⚠ Erro: "+e.message);}setAiLoad(false);};
+  const pedirSugestao=async()=>{setSugestaoLoad(true);setSugestao("");
+    try{const hist=(detalhe.atualizacoes||[]).slice(-5).map(a=>"["+a.data+"] "+a.texto).join("\n");
+    const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:500,messages:[{role:"user",content:"Você é consultor de RH. Analise:\nContrato: "+detalhe.titulo+"\nObjeto: "+(detalhe.objeto||"N/A")+"\nStatus: "+detalhe.status+"\nHistórico:\n"+(hist||"Sem atualizações.")+"\n\nDê 3 sugestões práticas de próximos passos. Seja conciso, use bullet points (•). Em português."}]})});
+    const dd=await res.json();setSugestao(dd.content?.find(b=>b.type==="text")?.text||"");
+    }catch(e){toast("⚠ Erro IA: "+e.message);}setSugestaoLoad(false);};
+
+  if(view==="detalhe"&&detalhe){const c=detalhe;const p=pct(c);const d=dias(c);const cor=CORCT[c.status]||"#3b82f6";
+    return React.createElement("div",{className:"page"},
+      React.createElement("div",{style:{display:"flex",alignItems:"center",gap:12,marginBottom:24}},
+        React.createElement("button",{className:"btn bg2b bsm",onClick:()=>{setView("lista");setDetalhe(null);setSugestao("");}},"← Voltar"),
+        React.createElement("div",{style:{flex:1}},React.createElement("div",{style:{fontSize:17,fontWeight:700}},c.titulo),React.createElement("div",{style:{fontSize:13,color:"var(--muted)",marginTop:2,display:"flex",gap:10,alignItems:"center"}},[c.nomeCliente&&"🏢 "+c.nomeCliente,React.createElement("span",{style:{display:"inline-flex",padding:"3px 9px",borderRadius:20,fontSize:11,fontWeight:600,background:cor+"22",color:cor}},c.status)].filter(Boolean))),
+        !readonly&&React.createElement("button",{className:"btn bg2b bsm",onClick:()=>open(c)},"✏ Editar")
+      ),
+      React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}},
+        React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{fontSize:13,fontWeight:600,marginBottom:16}},"Andamento"),
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:8}},React.createElement("span",{style:{color:"var(--muted)"}},"Conclusão"),React.createElement("span",{style:{color:p>=100?"#ef4444":cor,fontWeight:700,fontSize:20,fontFamily:"DM Mono"}},p+"%")),
+          React.createElement("div",{style:{height:8,background:"var(--bg4)",borderRadius:4,overflow:"hidden",marginBottom:16}},React.createElement("div",{style:{width:Math.min(p,100)+"%",height:"100%",background:p>=100?"#ef4444":cor,borderRadius:4,transition:"width .5s"}})),
+          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}},
+            ...[{l:"Início",v:c.dataInicio?new Date(c.dataInicio+"T12:00:00").toLocaleDateString("pt-BR"):"—"},{l:"Término",v:c.dataFim?new Date(c.dataFim+"T12:00:00").toLocaleDateString("pt-BR"):"—"},{l:"Duração",v:c.duracao?c.duracao+" meses":"—"},{l:"Restam",v:d===null?"—":d<0?(-d)+"d vencido":d===0?"Hoje":d+"d"}].map(x=>React.createElement("div",{key:x.l,style:{background:"var(--bg3)",borderRadius:8,padding:"10px 12px"}},React.createElement("div",{style:{fontSize:10,color:"var(--muted)",marginBottom:3}},x.l),React.createElement("div",{style:{fontSize:13,fontWeight:600}},x.v)))
+          ),
+          c.valor>0&&React.createElement("div",{style:{marginTop:12,padding:"10px 14px",background:"var(--bg3)",borderRadius:8,display:"flex",justifyContent:"space-between",alignItems:"center"}},React.createElement("span",{style:{fontSize:12,color:"var(--muted)"}},"Valor "+(c.tipoValor==="mensal"?"mensal":"total")),React.createElement("span",{style:{fontSize:18,fontWeight:700,color:cfg.corSecundaria,fontFamily:"DM Mono"}},"R$ "+Number(c.valor).toLocaleString("pt-BR")))
+        ),
+        React.createElement("div",{className:"card"},
+          React.createElement("div",{style:{fontSize:13,fontWeight:600,marginBottom:14}},"Informações"),
+          c.objeto&&React.createElement("div",{style:{marginBottom:14}},React.createElement("div",{style:{fontSize:11,color:"var(--muted)",marginBottom:5}},"ESCOPO"),React.createElement("div",{style:{fontSize:13,lineHeight:1.6}},c.objeto)),
+          c.responsavel&&React.createElement("div",{style:{marginBottom:10}},React.createElement("div",{style:{fontSize:11,color:"var(--muted)",marginBottom:3}},"RESPONSÁVEL"),React.createElement("div",{style:{fontSize:13,fontWeight:500}},"👤 "+c.responsavel)),
+          c.observacoes&&React.createElement("div",null,React.createElement("div",{style:{fontSize:11,color:"var(--muted)",marginBottom:3}},"OBSERVAÇÕES"),React.createElement("div",{style:{fontSize:13,color:"var(--muted)",lineHeight:1.6}},c.observacoes))
+        )
+      ),
+      React.createElement("div",{className:"card",style:{marginBottom:20}},
+        React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:sugestao?16:0}},
+          React.createElement("div",{style:{fontSize:13,fontWeight:600}},"🤖 Sugestões de próximos passos"),
+          React.createElement("button",{className:"btn bp bsm",onClick:pedirSugestao,disabled:sugestaoLoad},sugestaoLoad?"⟳ Analisando...":"✨ Gerar com IA")
+        ),
+        sugestao&&React.createElement("div",{style:{background:"rgba(59,130,246,.06)",border:"1px solid rgba(59,130,246,.2)",borderRadius:10,padding:14,fontSize:13,lineHeight:1.8,whiteSpace:"pre-line",marginTop:12}},sugestao),
+        !sugestao&&!sugestaoLoad&&React.createElement("div",{style:{fontSize:12,color:"var(--muted)",marginTop:8}},"Clique em 'Gerar com IA' para obter sugestões baseadas no contrato e histórico.")
+      ),
+      React.createElement("div",{className:"card"},
+        React.createElement("div",{style:{fontSize:13,fontWeight:600,marginBottom:16}},"📋 Histórico de atualizações"),
+        !readonly&&React.createElement("div",{style:{marginBottom:20}},
+          React.createElement("textarea",{className:"textarea",value:novaAtt,onChange:e=>setNovaAtt(e.target.value),placeholder:"Registre reuniões, entregas, situação atual, próximos passos...",style:{minHeight:80,marginBottom:8}}),
+          React.createElement("button",{className:"btn bp bsm",onClick:addAtt,disabled:!novaAtt.trim()},"Registrar atualização")
+        ),
+        React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:12}},
+          ...[...(c.atualizacoes||[])].reverse().map(a=>React.createElement("div",{key:a.id,style:{display:"flex",gap:12,alignItems:"flex-start"}},
+            React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:cfg.corPrimaria,marginTop:6,flexShrink:0}}),
+            React.createElement("div",{style:{flex:1,background:"var(--bg3)",borderRadius:8,padding:"10px 14px"}},
+              React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:6}},
+                React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},React.createElement("span",{style:{fontSize:11,fontWeight:600,color:cfg.corPrimaria}},a.autor),React.createElement("span",{style:{fontSize:10,color:"var(--muted)"}},a.data)),
+                !readonly&&React.createElement("button",{className:"btn bd bxs",onClick:()=>delAtt(a.id)},React.createElement("svg",{width:11,height:11,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:2},React.createElement("polyline",{points:"3 6 5 6 21 6"}),React.createElement("path",{d:"M19 6l-1 14H6L5 6"})))
+              ),
+              React.createElement("div",{style:{fontSize:13,lineHeight:1.6,whiteSpace:"pre-wrap"}},a.texto)
+            )
+          )),
+          (c.atualizacoes||[]).length===0&&React.createElement("div",{style:{textAlign:"center",padding:30,color:"var(--muted)",fontSize:13}},"Nenhuma atualização ainda. Registre o primeiro andamento acima!")
+        )
+      ),
+      modal&&!readonly&&React.createElement("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:20,backdropFilter:"blur(6px)"},onClick:e=>e.target===e.currentTarget&&setModal(null)},
+        React.createElement("div",{style:{background:"var(--bg2)",border:"1px solid var(--b2)",borderRadius:14,width:"100%",maxWidth:680,maxHeight:"92vh",overflowY:"auto",padding:28}},
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:20}},React.createElement("div",{style:{fontSize:16,fontWeight:700}},"Editar contrato"),React.createElement("button",{className:"btn bg2b bsm",onClick:()=>setModal(null)},"✕")),
+          React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:14}},
+            React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Título *"),React.createElement("input",{className:"input",value:form.titulo||"",onChange:e=>setForm(p=>({...p,titulo:e.target.value}))})),
+            React.createElement("div",{className:"g2"},React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Cliente"),React.createElement("select",{className:"select",value:form.clienteId||"",onChange:e=>setForm(p=>({...p,clienteId:e.target.value}))},React.createElement("option",{value:""},"Selecionar..."),clientes.map(c=>React.createElement("option",{key:c.id,value:c.id},c.nome)))),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Status"),React.createElement("select",{className:"select",value:form.status||"Em andamento",onChange:e=>setForm(p=>({...p,status:e.target.value}))},STATUS_CONTRATO.map(s=>React.createElement("option",{key:s},s))))),
+            React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Escopo / Objeto"),React.createElement("textarea",{className:"textarea",value:form.objeto||"",onChange:e=>setForm(p=>({...p,objeto:e.target.value}))})),
+            React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}},React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Valor (R$)"),React.createElement("input",{className:"input",type:"number",value:form.valor||"",onChange:e=>setForm(p=>({...p,valor:e.target.value}))})),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Tipo"),React.createElement("select",{className:"select",value:form.tipoValor||"mensal",onChange:e=>setForm(p=>({...p,tipoValor:e.target.value}))},React.createElement("option",{value:"mensal"},"Mensal"),React.createElement("option",{value:"total"},"Total"))),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Duração (meses)"),React.createElement("input",{className:"input",type:"number",value:form.duracao||"",onChange:e=>setForm(p=>({...p,duracao:e.target.value}))}))),
+            React.createElement("div",{className:"g2"},React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Data início"),React.createElement("input",{className:"input",type:"date",value:form.dataInicio||"",onChange:e=>setForm(p=>({...p,dataInicio:e.target.value}))})),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Data término"),React.createElement("input",{className:"input",type:"date",value:form.dataFim||"",onChange:e=>setForm(p=>({...p,dataFim:e.target.value}))}))),
+            React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Responsável"),React.createElement("input",{className:"input",value:form.responsavel||"",onChange:e=>setForm(p=>({...p,responsavel:e.target.value}))})),
+            React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Observações"),React.createElement("textarea",{className:"textarea",value:form.observacoes||"",onChange:e=>setForm(p=>({...p,observacoes:e.target.value}))}))
+          ),
+          React.createElement("div",{style:{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}},React.createElement("button",{className:"btn bg2b",onClick:()=>setModal(null)},"Cancelar"),React.createElement("button",{className:"btn bp",onClick:save},"Salvar"))
+        )
+      )
+    );
+  }
+
+  return React.createElement("div",{className:"page"},
+    React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:22}},
+      React.createElement("div",null,React.createElement("div",{style:{fontSize:17,fontWeight:700}},"Contratos"),React.createElement("div",{style:{fontSize:13,color:"var(--muted)",marginTop:2}},contratos.length+" contratos cadastrados")),
+      !readonly&&React.createElement("button",{className:"btn bp",onClick:()=>open(null)},React.createElement("svg",{width:14,height:14,viewBox:"0 0 24 24",fill:"none",stroke:"#fff",strokeWidth:2,strokeLinecap:"round"},[React.createElement("line",{key:1,x1:12,y1:5,x2:12,y2:19}),React.createElement("line",{key:2,x1:5,y1:12,x2:19,y2:12})])," Novo contrato")
+    ),
+    contratos.length===0&&React.createElement("div",{style:{textAlign:"center",padding:60,color:"var(--muted)"}},React.createElement("div",{style:{fontSize:40,marginBottom:12}},"📄"),React.createElement("div",{style:{fontSize:15,fontWeight:600,marginBottom:6}},"Nenhum contrato cadastrado"),React.createElement("div",{style:{fontSize:13}},'Clique em "Novo contrato" para começar')),
+    React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16}},
+      ...contratos.map(c=>{const p=pct(c);const d=dias(c);const cor=CORCT[c.status]||"#3b82f6";const atrasado=d!==null&&d<0&&c.status==="Em andamento";
+        return React.createElement("div",{key:c.id,className:"card",style:{cursor:"pointer",border:atrasado?"1px solid rgba(239,68,68,.4)":"1px solid var(--border)"},onClick:()=>{setDetalhe(c);setView("detalhe");setSugestao("");}},
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}},
+            React.createElement("div",{style:{flex:1,minWidth:0}},React.createElement("div",{style:{fontSize:14,fontWeight:700,marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},c.titulo),React.createElement("span",{style:{display:"inline-flex",padding:"3px 9px",borderRadius:20,fontSize:11,fontWeight:600,background:cor+"22",color:cor}},c.status)),
+            !readonly&&React.createElement("div",{style:{display:"flex",gap:4,marginLeft:8},onClick:e=>e.stopPropagation()},React.createElement("button",{className:"btn bg2b bxs",onClick:()=>open(c)},React.createElement("svg",{width:12,height:12,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:2},React.createElement("path",{d:"M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"}),React.createElement("path",{d:"M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"}))),React.createElement("button",{className:"btn bd bxs",onClick:()=>del(c.id)},React.createElement("svg",{width:12,height:12,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:2},React.createElement("polyline",{points:"3 6 5 6 21 6"}),React.createElement("path",{d:"M19 6l-1 14H6L5 6"}))))
+          ),
+          c.nomeCliente&&React.createElement("div",{style:{fontSize:12,color:"var(--muted)",marginBottom:8}},"🏢 "+c.nomeCliente),
+          c.objeto&&React.createElement("div",{style:{fontSize:12,color:"var(--muted)",marginBottom:12,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}},c.objeto),
+          React.createElement("div",{style:{marginBottom:10}},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--muted)",marginBottom:5}},React.createElement("span",null,"Progresso"),React.createElement("span",{style:{color:p>=100?"#ef4444":cor,fontFamily:"DM Mono"}},p+"%")),React.createElement("div",{style:{height:6,background:"var(--bg4)",borderRadius:4,overflow:"hidden"}},React.createElement("div",{style:{width:Math.min(p,100)+"%",height:"100%",background:p>=100?"#ef4444":cor,borderRadius:4}}))),
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",fontSize:12}},React.createElement("div",{style:{color:"var(--muted)"}},[c.duracao&&c.duracao+" meses",c.dataInicio&&new Date(c.dataInicio+"T12:00:00").toLocaleDateString("pt-BR")].filter(Boolean).join(" · ")||""),d!==null&&React.createElement("div",{style:{color:d<0?"#ef4444":d<=30?"#f59e0b":"var(--muted)",fontWeight:600}},d<0?(-d)+"d vencido":d===0?"Vence hoje":d+"d restantes")),
+          c.valor>0&&React.createElement("div",{style:{marginTop:10,padding:"6px 10px",background:"var(--bg3)",borderRadius:6,fontSize:12,display:"flex",justifyContent:"space-between"}},React.createElement("span",{style:{color:"var(--muted)"}},"Valor "+(c.tipoValor==="mensal"?"mensal":"total")),React.createElement("span",{style:{fontWeight:600,color:cfg.corSecundaria,fontFamily:"DM Mono"}},"R$ "+Number(c.valor).toLocaleString("pt-BR"))),
+          React.createElement("div",{style:{marginTop:10,fontSize:11,color:"var(--muted)"}},(c.atualizacoes||[]).length+" atualização"+((c.atualizacoes||[]).length!==1?"s":"")+" · clique para ver detalhes")
+        );
+      })
+    ),
+    modal&&!readonly&&React.createElement("div",{style:{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:20,backdropFilter:"blur(6px)"},onClick:e=>e.target===e.currentTarget&&setModal(null)},
+      React.createElement("div",{style:{background:"var(--bg2)",border:"1px solid var(--b2)",borderRadius:14,width:"100%",maxWidth:680,maxHeight:"92vh",overflowY:"auto",padding:28}},
+        React.createElement("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:20}},React.createElement("div",{style:{fontSize:16,fontWeight:700}},modal==="novo"?"Novo contrato":"Editar contrato"),React.createElement("button",{className:"btn bg2b bsm",onClick:()=>setModal(null)},"✕")),
+        aiOk&&React.createElement("div",{style:{background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.2)",borderRadius:10,padding:"10px 14px",fontSize:12,color:"#4ade80",marginBottom:14}},"✓ IA extraiu os dados — revise antes de salvar"),
+        React.createElement("div",{style:{marginBottom:16}},
+          React.createElement("div",{style:{fontSize:12,color:"var(--muted)",marginBottom:8}},"📎 Opcional: suba o contrato para preencher automaticamente"),
+          React.createElement("label",{style:{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:"var(--bg3)",border:"1.5px dashed "+(aiArq?"var(--primary)":"var(--b2)"),borderRadius:10,cursor:"pointer"}},
+            React.createElement("div",{style:{fontSize:24,flexShrink:0}},"📄"),
+            React.createElement("div",{style:{flex:1,minWidth:0}},aiArq?React.createElement("div",{style:{fontSize:13,fontWeight:500}},aiArq.name):React.createElement("div",{style:{fontSize:13,color:"var(--muted)"}},"Clique para selecionar o contrato (PDF ou imagem)")),
+            aiArq&&React.createElement("button",{className:"btn bg2b bxs",onClick:e=>{e.preventDefault();setAiArq(null);setAiOk(false);}},"Remover"),
+            aiArq&&!aiLoad&&React.createElement("button",{className:"btn bp bsm",onClick:e=>{e.preventDefault();lerIA();}},"🤖 Ler"),
+            aiLoad&&React.createElement("div",{style:{fontSize:12,color:"var(--muted)",flexShrink:0}},"⟳ Analisando..."),
+            React.createElement("input",{type:"file",accept:"image/jpeg,image/png,image/webp,application/pdf",style:{display:"none"},onChange:e=>{const f=e.target.files[0];if(f)setAiArq(f);}})
+          )
+        ),
+        React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:14}},
+          React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Título *"),React.createElement("input",{className:"input",value:form.titulo||"",onChange:e=>setForm(p=>({...p,titulo:e.target.value}))})),
+          React.createElement("div",{className:"g2"},React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Cliente"),React.createElement("select",{className:"select",value:form.clienteId||"",onChange:e=>setForm(p=>({...p,clienteId:e.target.value}))},React.createElement("option",{value:""},"Selecionar..."),clientes.map(c=>React.createElement("option",{key:c.id,value:c.id},c.nome)))),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Status"),React.createElement("select",{className:"select",value:form.status||"Em andamento",onChange:e=>setForm(p=>({...p,status:e.target.value}))},STATUS_CONTRATO.map(s=>React.createElement("option",{key:s},s))))),
+          React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Escopo / Objeto"),React.createElement("textarea",{className:"textarea",value:form.objeto||"",onChange:e=>setForm(p=>({...p,objeto:e.target.value})),placeholder:"Descreva o que foi contratado..."})),
+          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}},React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Valor (R$)"),React.createElement("input",{className:"input",type:"number",value:form.valor||"",onChange:e=>setForm(p=>({...p,valor:e.target.value}))})),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Tipo"),React.createElement("select",{className:"select",value:form.tipoValor||"mensal",onChange:e=>setForm(p=>({...p,tipoValor:e.target.value}))},React.createElement("option",{value:"mensal"},"Mensal"),React.createElement("option",{value:"total"},"Total"))),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Duração (meses)"),React.createElement("input",{className:"input",type:"number",value:form.duracao||"",onChange:e=>setForm(p=>({...p,duracao:e.target.value}))}))),
+          React.createElement("div",{className:"g2"},React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Data início"),React.createElement("input",{className:"input",type:"date",value:form.dataInicio||"",onChange:e=>setForm(p=>({...p,dataInicio:e.target.value}))})),React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Data término"),React.createElement("input",{className:"input",type:"date",value:form.dataFim||"",onChange:e=>setForm(p=>({...p,dataFim:e.target.value}))}))),
+          React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Responsável"),React.createElement("input",{className:"input",value:form.responsavel||"",onChange:e=>setForm(p=>({...p,responsavel:e.target.value}))})),
+          React.createElement("div",{className:"field"},React.createElement("div",{className:"label"},"Observações"),React.createElement("textarea",{className:"textarea",value:form.observacoes||"",onChange:e=>setForm(p=>({...p,observacoes:e.target.value}))}))
+        ),
+        React.createElement("div",{style:{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}},React.createElement("button",{className:"btn bg2b",onClick:()=>setModal(null)},"Cancelar"),React.createElement("button",{className:"btn bp",onClick:save},"Salvar contrato"))
+      )
+    )
+  );
+}
+
 function App(){
   const [currentUser,setCurrentUser]=useState(null);const [page,setPage]=useState('dashboard');
   const [cfg,setCfg]=useState(()=>{const s=lsGet('pptx:cfg');return s?{...DEFAULT_CFG,...s,perfis:{...PERFIS_DEFAULT,...(s.perfis||{})}}:DEFAULT_CFG;});
